@@ -1,146 +1,274 @@
-# Wellfound Auto-Apply
+# Wellfound Auto Apply
 
-Automatically applies to matching jobs on [Wellfound](https://wellfound.com) (ex-AngelList Talent).
-A Playwright runner opens Chrome with your saved Wellfound session, injects the apply
-script into the `/jobs` feed, and the script:
+A Playwright-based automation runner for applying to software engineering roles on [Wellfound](https://wellfound.com).
 
-- scrolls the infinite feed and picks jobs whose **title matches your keywords** (and skips a blocklist),
-- opens each job's "Apply to *Company*" panel,
-- fills the **cover letter** (personalized per company/role from your `.env` data),
-- answers extra questions from a built-in Q&A bank (optionally falls back to **Gemini** for unknown questions),
-- handles location prompts ("I can relocate to…"), dropdowns, radios and checkboxes,
-- submits, logs every application to `applications.csv`, and respects a **50/day cap**.
+This is a significantly modified fork of the original project, focused on a more reliable Wellfound-only workflow for entry-level software engineering applications.
 
-It starts in **DRY RUN** mode by default — it fills everything but never presses Send —
-so you can watch it work before going live.
+> **Use responsibly.** Automation may violate Wellfound's terms, trigger anti-bot systems, or result in account restrictions. Use dry-run mode first and review application behavior.
+
+## Features
+
+- Wellfound-only runner through `auto-apply-runner.js`
+- Entry-level filtering for Software Engineer, SDE, Backend, Frontend, Full Stack, AI/ML, Python, Application, Platform, and Web roles
+- Blocks clearly senior roles such as Senior, Staff, Principal, Lead, Manager, Director, Architect, and Intern
+- Rejects explicit experience requirements above the configured target
+- Location-agnostic job discovery while respecting Wellfound's own application eligibility checks
+- Two-stage Wellfound application flow
+- React-controlled field filling
+- Native and custom radio-control handling
+- Built-in application-question answer bank
+- Optional Gemini assistance for unmatched application questions
+- Manual skip: press `s` + Enter while a problematic job is active
+- Confirmation-based application counting
+- CSV logging of successful submissions
+- Daily application cap
+- Persistent Chrome profile for the Wellfound session
+
+## Files
+
+```text
+auto-apply-runner.js
+wellfound-auto-apply.js
+config.js
+gemini-coverletter.js
+package.json
+package-lock.json
+.env.example
+.gitignore
+README.md
+```
+
+Runtime/private files should not be committed:
+
+```text
+.env
+node_modules/
+.wellfound-chrome-profile/
+applications.csv
+apply-state-wellfound.json
+blocked-step-*.png
+backup-*
+```
 
 ## Requirements
 
-- Windows 10/11 (Task Scheduler used for automatic daily runs — manual runs work anywhere Node does)
-- [Node.js](https://nodejs.org/) 18+
+- Node.js 20+
 - Google Chrome
-- A Wellfound account with your profile + resume completed
+- Wellfound account
+- Gemini API key only if Gemini-assisted answers are desired
 
-## Setup
-
-**1. Clone and install:**
+## Install
 
 ```powershell
-git clone https://github.com/ankitbaghel01/wellfound_autoApply.git
+git clone https://github.com/<your-username>/wellfound_autoApply.git
 cd wellfound_autoApply
 npm install
+Copy-Item .env.example .env
 ```
 
-**2. Create your `.env`:**
+Edit `.env` with your own data.
 
-```powershell
-copy .env.example .env
+## Configuration
+
+Example:
+
+```env
+NAME=Your Name
+EMAIL=you@example.com
+PHONE=+1 555 555 5555
+LOCATION=City, State, Country
+
+CURRENT_ROLE=Software Engineer
+COMPANY=Your Company
+EDUCATION=MS Computer Science, Your University
+YEARS_EXPERIENCE=2+ years
+
+SKILLS=Python, TypeScript, JavaScript, React, Next.js, FastAPI, Flask, Node.js
+HIGHLIGHTS=Achievement one||Achievement two||Achievement three
+
+NOTICE_PERIOD=Immediately
+CURRENT_CTC=0
+EXPECTED_CTC=150000
+DOB=
+GENDER=Prefer not to say
+
+WORK_AUTH=Authorized to work in the United States under F-1 OPT.
+
+GITHUB_URL=https://github.com/yourusername
+LINKEDIN_URL=https://www.linkedin.com/in/yourusername/
+PORTFOLIO_URL=https://yourportfolio.com/
+
+GEMINI_KEY=
 ```
 
-Open `.env` and fill in your details — name, contact, skills, highlights, salary
-expectations, links, etc. Every application answer and cover letter is built from
-these values; **nothing personal is hard-coded in the scripts**. `.env` is
-git-ignored, so your data never gets pushed.
+Never commit `.env`.
 
-Optional: set `GEMINI_KEY` to a free Google Gemini API key — any application
-question the built-in answer bank can't match gets answered by Gemini using your CV.
-
-**3. Log in to Wellfound (one time, visible browser):**
+## Login
 
 ```powershell
 node auto-apply-runner.js wellfound login
 ```
 
-A Chrome window opens — log in to wellfound.com, then close the window.
-The session is saved to `.wellfound-chrome-profile/` and reused by every later run.
+Log in manually, then close Chrome. The session is saved in:
 
-**4. Dry run (watch it, nothing is submitted):**
+```text
+.wellfound-chrome-profile/
+```
+
+## Dry run
+
+Always test first:
 
 ```powershell
 node auto-apply-runner.js wellfound
 ```
 
-Chrome opens on the jobs feed, and you'll see forms being filled. The log
-(`auto-apply-wellfound.log`) shows lines like:
+Dry-run mode fills the application but does not submit it.
 
-```
-✍ cover letter filled
-🔍 DRY_RUN — would click: Apply
-==> 1/50 this run (1/50 today)
-```
-
-**5. Go live:**
+## Live mode
 
 ```powershell
 node auto-apply-runner.js wellfound --live
 ```
 
-Same flow, but Send is actually clicked. Each application is appended to
-`applications.csv` (Date, Site, Role, Company, Salary, Skills, Job Link, JD) and
-counted in `apply-state-wellfound.json` toward the daily cap.
+An application is counted only after the runner receives Wellfound's submission confirmation.
 
-## Customizing which jobs it applies to
+## Manual skip
 
-Edit the `CONFIG` block at the top of `wellfound-auto-apply.js`:
+When a job is wrong, stuck, or requires manual review:
 
-| Setting | What it does |
-|---|---|
-| `TITLE_KEYWORDS` | Apply only when the job title contains one of these (case-insensitive) |
-| `TITLE_BLOCKLIST` | Skip when the title contains any of these (senior, manager, .net, …) |
-| `MAX_APPLICATIONS` | Per-run cap (the runner overrides it with the daily cap remaining) |
-| `MIN_DELAY_MS` / `MAX_DELAY_MS` | Wait between applications (default 60–150 s — human pace; going faster trips Wellfound's bot-check) |
-
-**Locations:** the script applies to whatever your Wellfound search filters show on
-`wellfound.com/jobs` — set your filters (remote / worldwide / a city) once in the
-browser and it follows them. Jobs in other locations are still handled: when
-Wellfound asks, it picks "I can relocate to…" and selects the job's offered location.
-Jobs the company has location-blocked are detected and skipped. Jobs posted more than
-14 days ago are skipped.
-
-## Run it automatically every day (Task Scheduler)
-
-```powershell
-$repo = "C:\path\to\wellfound_autoApply"
-$action  = New-ScheduledTaskAction -Execute "node.exe" -Argument "`"$repo\auto-apply-runner.js`" wellfound --live" -WorkingDirectory $repo
-$trigger = New-ScheduledTaskTrigger -Daily -At 12:30
-Register-ScheduledTask -TaskName "WellfoundAutoApply" -Action $action -Trigger $trigger -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable)
+```text
+s
+Enter
 ```
 
-Useful commands:
+The current job is skipped and is not counted as submitted.
 
-```powershell
-Start-ScheduledTask WellfoundAutoApply       # run now
-Disable-ScheduledTask WellfoundAutoApply     # pause
-Enable-ScheduledTask WellfoundAutoApply      # resume
-Unregister-ScheduledTask WellfoundAutoApply  # remove
+## Filtering
+
+Allowed title families include:
+
+```text
+Software Engineer
+Software Developer
+Software Development Engineer
+SDE
+Backend Engineer
+Backend Developer
+Full Stack Engineer
+Frontend Engineer
+Python Engineer
+Machine Learning Engineer
+ML Engineer
+AI Engineer
+Application Engineer
+Platform Engineer
+Web Engineer
 ```
+
+The blocklist includes:
+
+```text
+Senior
+Staff
+Principal
+Lead
+Manager
+Director
+Architect
+Intern
+iOS
+Android
+.NET
+Ruby
+PHP
+```
+
+Explicit experience requirements such as `4+ years`, `5+ years`, `10+ years`, and senior/staff/principal-level requirements are rejected.
+
+## Gemini
+
+Gemini is optional. The current Wellfound script can use Gemini for application questions that are not matched by the built-in answer bank.
+
+Set:
+
+```env
+GEMINI_KEY=your-key
+```
+
+Keep the key in `.env`, never in committed source.
+
+## Logging
+
+Successful applications are appended to:
+
+```text
+applications.csv
+```
+
+The CSV includes the date, site, role, company, salary, skills, job link, and a short job-description field.
+
+Treat this file as private because it can contain personal/application information.
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `0 job cards found` on every page | Wellfound is showing a DataDome "Verification Required" captcha. Run `node auto-apply-runner.js wellfound login`, solve the slider once manually, close the window, re-run. |
-| Session logged out | Delete `.wellfound-chrome-profile/` and repeat the `login` step. |
-| `no apply modal found — skipping` | That job opened as a full page instead of the apply panel — it's skipped safely and not counted. |
-| `no Send button found` on many jobs in a row | Usually the bot-check again (see first row). Keep delays at 60 s+. |
-| Want today's counter reset | Delete `apply-state-wellfound.json`. |
+### 0 matching jobs
 
-## Files
+Review `TITLE_KEYWORDS`, `TITLE_BLOCKLIST`, and `EXPERIENCE_BLOCKLIST` in `wellfound-auto-apply.js`.
 
-| File | Purpose |
-|---|---|
-| `auto-apply-runner.js` | Playwright wrapper: opens Chrome, injects the site script, logs to CSV, enforces the daily cap |
-| `wellfound-auto-apply.js` | The Wellfound apply logic (also pasteable directly into the DevTools console) |
-| `config.js` | Tiny no-dependency `.env` loader |
-| `.env.example` | Template — copy to `.env` and fill in |
-| `applications.csv` | Every submitted application (git-ignored) |
-| `apply-state-wellfound.json` | Today's application count for the 50/day cap (git-ignored) |
-| `auto-apply-wellfound.log` | Run history (git-ignored) |
-| `.wellfound-chrome-profile/` | Saved Chrome session (git-ignored) |
+### Application panel does not appear
 
-## Disclaimer
+Run dry mode first. Wellfound changes its frontend frequently. Use `s` + Enter to skip a problematic job.
 
-Auto-applying may violate Wellfound's Terms of Service and can get an
-account rate-limited or banned. The delays are deliberately human-like and everything
-runs on your own machine with your own account — use at your own risk, and review
-the dry run before going live.
+### Location/timezone blocked
+
+The script should skip the application rather than count it as submitted.
+
+### Chrome appears stuck
+
+Use:
+
+```text
+s
+Enter
+```
+
+Then check the console. Only a Wellfound confirmation should increment the submitted count.
+
+## Development checks
+
+Run:
+
+```powershell
+npm run check
+```
+
+or:
+
+```powershell
+node --check auto-apply-runner.js
+node --check wellfound-auto-apply.js
+node --check config.js
+```
+
+## Keeping the fork connected to the original repository
+
+```bash
+git remote add upstream https://github.com/ankitbaghel01/wellfound_autoApply.git
+git fetch upstream
+git merge upstream/main
+```
+
+Push your changes to your fork:
+
+```bash
+git push origin main
+```
+
+## Acknowledgments
+
+Original repository:
+
+https://github.com/ankitbaghel01/wellfound_autoApply
+
+This fork contains substantial changes to filtering, the browser runner, Wellfound application handling, question answering, logging, and manual controls.
