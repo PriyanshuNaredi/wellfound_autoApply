@@ -33,6 +33,25 @@ process.on('uncaughtException', (e) => console.log(`[${new Date().toLocaleString
 const SITE_ARG = process.argv[2];
 const LOGIN_MODE = process.argv.includes('login');
 const LIVE = process.argv.includes('--live');
+// process.stdin.setEncoding('utf8');
+
+// process.stdin.on('data', async (data) => {
+//   const key = data.trim().toLowerCase();
+
+//   if (key !== 's') {
+//     return;
+//   }
+
+//   log('⏭ MANUAL SKIP requested');
+
+//   const pages = ctx?.pages?.() || [];
+
+//   for (const page of pages) {
+//     await page.evaluate(() => {
+//       window.__aaSkipJob = true;
+//     }).catch(() => { });
+//   }
+// });
 
 const SITES = {
   indeed: {
@@ -98,8 +117,8 @@ const DAILY_CAP = site.dailyCap || 50;
 const STATE_FILE = path.join(__dirname, `apply-state-${SITE_ARG}.json`);
 const todayKey = new Date().toDateString();
 let dayState = { date: todayKey, count: 0 };
-try { const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8').replace(/^﻿/, '')); if (s.date === todayKey) dayState = s; } catch (e) {}
-const bumpDayCount = () => { dayState.count++; try { fs.writeFileSync(STATE_FILE, JSON.stringify(dayState)); } catch (e) {} };
+try { const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8').replace(/^﻿/, '')); if (s.date === todayKey) dayState = s; } catch (e) { }
+const bumpDayCount = () => { dayState.count++; try { fs.writeFileSync(STATE_FILE, JSON.stringify(dayState)); } catch (e) { } };
 const TARGET = DAILY_CAP - dayState.count;
 const MAX_RUNTIME_MS = 100 * 60 * 1000;
 const IDLE_ROTATE_MS = 4 * 60 * 1000;
@@ -135,7 +154,8 @@ function buildInjection() {
   // the console script reads its personal data from window.__APPLY_CONFIG (from .env),
   // so no PII lives in the injected script itself
   return `(async () => {
-    if (window.__aaBusy) return; window.__aaBusy = true;
+    if (window.__aaBusy || window.__aaFinished) return;
+    window.__aaBusy = true;
     window.__APPLY_CONFIG = ${JSON.stringify({ CV, geminiKey })};
     try { await ${raw}
     } finally { window.__aaBusy = false; }
@@ -156,13 +176,31 @@ function buildInjection() {
       '--disable-backgrounding-occluded-windows', // keep timers full-speed while off-screen
       '--disable-renderer-backgrounding',
       '--disable-popup-blocking', // naukri script opens each job in a popup it controls
-      ...(LOGIN_MODE ? [] : ['--window-position=-32000,-32000']),
+      // ...(LOGIN_MODE ? [] : ['--window-position=-32000,-32000']),
+      ...(LOGIN_MODE ? [] : []),
     ],
   });
   const mainPage = ctx.pages()[0] || (await ctx.newPage());
+  process.stdin.setEncoding('utf8');
+
+  process.stdin.on('data', async (data) => {
+    const key = data.trim().toLowerCase();
+
+    if (key !== 's') {
+      return;
+    }
+
+    log('⏭ MANUAL SKIP requested');
+
+    for (const page of ctx.pages()) {
+      await page.evaluate(() => {
+        window.__aaSkipJob = true;
+      }).catch(() => { });
+    }
+  });
 
   if (LOGIN_MODE) {
-    await mainPage.goto(site.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    await mainPage.goto(site.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => { });
     log('Chrome is open — log in to the site, then CLOSE the browser window. The session is saved automatically.');
     await new Promise((res) => ctx.on('close', res));
     log('Login window closed. Session saved. Now test with: node auto-apply-runner.js ' + SITE_ARG);
@@ -189,7 +227,7 @@ function buildInjection() {
 
       // snapshot the wizard whenever it can't proceed, so the blocking field is visible
       if (/no Continue\/Submit button found|no Send button found/.test(clean)) {
-        page.screenshot({ path: path.join(__dirname, `blocked-step-${SITE_ARG}.png`) }).catch(() => {});
+        page.screenshot({ path: path.join(__dirname, `blocked-step-${SITE_ARG}.png`) }).catch(() => { });
       }
 
       // "▶ Applying: <title> @ <company>" (wellfound) / "▶ Opening: <title>" (indeed)
@@ -217,7 +255,7 @@ function buildInjection() {
             pendingJob.salary = pendingJob.salary || d.salary;
             pendingJob.jd = d.jd;
             pendingJob.skills = matchSkills(pendingJob.title + ' ' + d.jd);
-          }).catch(() => {});
+          }).catch(() => { });
         }, SITE_ARG === 'indeed' ? 6000 : 2000); // indeed pane loads slower; wellfound modal closes fast
       }
 
@@ -243,10 +281,10 @@ function buildInjection() {
               s.day = today; s.submitted = 0; s.applied = 0; s.seen = (s.seen || []).slice(-2000);
               localStorage.setItem(key, JSON.stringify(s));
             }
-          } catch (e) {}
-        }, [site.storeKey, new Date().toDateString()]).catch(() => {});
+          } catch (e) { }
+        }, [site.storeKey, new Date().toDateString()]).catch(() => { });
       }
-      await page.evaluate(injection).catch(() => {}); // navigation mid-run is normal
+      await page.evaluate(injection).catch(() => { }); // navigation mid-run is normal
     });
   }
 
@@ -260,12 +298,12 @@ function buildInjection() {
   if (/sign in|log in to continue|create an account|verify you are human/i.test(bodyText) && !/sign out/i.test(bodyText)) {
     log('WARNING: page looks logged-out or bot-checked. If runs keep finding 0 jobs, run: node auto-apply-runner.js ' + SITE_ARG + ' login');
   }
-  await mainPage.evaluate(injection).catch(() => {});
+  await mainPage.evaluate(injection).catch(() => { });
 
   // Supervisor: re-inject the search tab when idle, close finished form tabs,
   // rotate searches on inactivity, stop on target/time.
   while (submitted < TARGET && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 45000));
+    await new Promise((r) => setTimeout(r, 10000));
 
     const pages = ctx.pages();
     let anyBusy = false;
@@ -273,11 +311,11 @@ function buildInjection() {
       if (await isBusy(p)) anyBusy = true;
       // finished smartapply/form tabs: close them so tabs don't pile up
       if (p !== mainPage && /smartapply|\/apply/.test(p.url()) && !(await isBusy(p))) {
-        await p.close().catch(() => {});
+        await p.close().catch(() => { });
       }
       // live mode: after submit the form tab returns to search — close that duplicate search tab
       if (p !== mainPage && site.injectOn(p.url()) && !/smartapply|\/apply/.test(p.url()) && !(await isBusy(p))) {
-        await p.close().catch(() => {});
+        await p.close().catch(() => { });
       }
     }
 
@@ -286,9 +324,9 @@ function buildInjection() {
         searchIdx++;
         if (searchIdx >= site.searches.length) { log('All searches exhausted for today.'); break; }
         log(`Rotating to next search: ${site.searches[searchIdx]}`);
-        await mainPage.goto(site.searches[searchIdx], { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+        await mainPage.goto(site.searches[searchIdx], { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => { });
       } else {
-        await mainPage.evaluate(injection).catch(() => {}); // continue with next job on this page
+        await mainPage.evaluate(injection).catch(() => { }); // continue with next job on this page
       }
     }
   }

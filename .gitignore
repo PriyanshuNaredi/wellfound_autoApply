@@ -1,0 +1,13 @@
+*.pdf
+/.wellfound-chrome-profile/
+/node_modules/
+.env
+*.csv
+apply-state-wellfound.json
+*.ps1
+
+
+.env
+node_modules/
+*.log
+.wellfound-chrome-profile/

@@ -6,11 +6,16 @@
     "refresh": "node naukri-profile-refresh.js",
     "login": "node naukri-profile-refresh.js login"
   },
-  "keywords": ["naukri", "playwright", "automation"],
+  "keywords": [
+    "naukri",
+    "playwright",
+    "automation"
+  ],
   "author": "",
   "license": "ISC",
   "description": "Keeps your Naukri profile recently-updated by toggling the resume headline on a schedule",
   "dependencies": {
+    "@google/genai": "^2.17.1",
     "playwright-core": "^1.61.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
