@@ -399,7 +399,7 @@
   function cleanTitle(raw) {
     return (raw || '')
       .replace(/\s+/g, ' ')
-      .split(/remote only|on-?site|hybrid|â‚¹|\$\d|â‚¬|posted \d|recruiter|â€¢|\d+\s?(?:weeks?|days?|months?|hours?)\s?ago/i)[0]
+      .split(/remote only|on-?site|in[- ]?office|hybrid|â‚¹|\$\d|â‚¬|posted \d|recruiter|â€¢|\d+\s?(?:weeks?|days?|months?|hours?)\s?ago/i)[0]
       .replace(/\(?\s*remote\s*\)?$/i, '')
       .replace(/[\s\-â€“â€”|(,/]+$/g, '')
       .trim();
@@ -526,7 +526,7 @@
   //
   // ===============================================================
 
-  async function fillAndSubmit(company, title, cardText) {
+  async function fillAndSubmit(company, title, cardText, jobHref) {
 
     log(
       `  🔎 Wellfound application flow: ${company} / ${title}`
@@ -1093,12 +1093,17 @@
       // exists on /profile/edit, so store a flag and navigate there; the resume point
       // near the top of this script performs the edit on re-injection, then returns
       // to /jobs where the loop retries this job under the new profile location.
-      const jobLoc = extractJobLocation(cardText || panelText);
+      let jobLoc = extractJobLocation(cardText || panelText);
+      if (!jobLoc && jobHref) {
+        // Feed cards rarely carry structured location text; the full job page does.
+        log('📍 no location on card — fetching the job page');
+        jobLoc = await fetchJobLocation(jobHref);
+      }
       if (jobLoc) {
         const locFixCount = parseInt(localStorage.getItem('__aaLocFixCount') || '0', 10);
         if (locFixCount < 3) { // max 3 location fixes per day — prevents loops
           localStorage.setItem('__aaLocFixCount', String(locFixCount + 1));
-          localStorage.setItem('__aaLocFix', JSON.stringify({ loc: jobLoc, jobHref: location.href }));
+          localStorage.setItem('__aaLocFix', JSON.stringify({ loc: jobLoc, jobHref: jobHref || location.href }));
           log(`📍 navigating to /profile/edit to set location "${jobLoc}"`);
           applied = CONFIG.MAX_APPLICATIONS; // end this instance cleanly
           location.href = 'https://wellfound.com/profile/edit';
@@ -2495,14 +2500,34 @@
     const text = (cardText || '').replace(/\s+/g, ' ');
     let m;
     m = text.match(/job location[:\s]+([A-Za-z][A-Za-z .,'-]{1,40})/i);
-    if (m) return m[1].trim();
+    if (m) return trimCity(m[1]);
     m = text.match(/hires remotely in[:\s]+([A-Za-z][A-Za-z .,'-]{1,40})/i);
-    if (m) return m[1].trim();
+    if (m) return trimCity(m[1]);
     m = text.match(/remote\s*\([^)]*\)\s*[•·]\s*([A-Za-z][A-Za-z .,'-]{1,40})/i);
-    if (m) return m[1].trim();
+    if (m) return trimCity(m[1]);
     m = text.match(/remote\s*\(([^)]+)\)/i);
-    if (m) return m[1].trim();
+    if (m) return trimCity(m[1]);
     return '';
+  }
+
+  // Card/page text runs the city straight into the next label ("San Francisco Remote
+  // Work Policy..."); cut the capture at the first known section label.
+  function trimCity(raw) {
+    const stop = (raw || '').search(/\b(remote work policy|remote work|hires remotely|visa sponsorship|relocation|skills|about the job|about the role|what you|what success|posted|recruiter recently|employees)\b/i);
+    return (stop > 0 ? raw.slice(0, stop) : raw).replace(/[|\s,]+$/, '').trim();
+  }
+
+  // Same-origin fetch of the full job page; its "Job Location" / "Hires remotely in"
+  // sections survive in the SSR HTML, so stripping tags yields parseable text.
+  async function fetchJobLocation(jobUrl) {
+    try {
+      const res = await fetch(jobUrl, { credentials: 'include' });
+      const text = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      return extractJobLocation(text);
+    } catch (e) {
+      log('📍 job page fetch failed:', e.message);
+      return '';
+    }
   }
 
   // The location field is a Downshift combobox; its id changes every page load, so anchor on
@@ -2590,6 +2615,14 @@
         log(`📍 Location fix: updating profile location to "${locFix.loc}"`);
         await sleep(3000); // let the profile-edit page fully hydrate
         const ok = await updateProfileLocation(locFix.loc);
+        if (ok && locFix.jobHref) {
+          // unblock the retried job from the persisted seen-set now that the location changed
+          try {
+            const storedSeen = JSON.parse(localStorage.getItem('__aaSeenJobs') || '{}');
+            storedSeen.hrefs = (storedSeen.hrefs || []).filter((h) => h !== locFix.jobHref);
+            localStorage.setItem('__aaSeenJobs', JSON.stringify(storedSeen));
+          } catch (_) { }
+        }
         localStorage.removeItem('__aaLocFix');
         log(`📍 Location fix ${ok ? 'succeeded' : 'FAILED'} — returning to /jobs`);
         await sleep(1500);
@@ -2606,6 +2639,21 @@
 
   let applied = 0;
   const seen = new Set();
+
+  // The runner re-injects this script every time it finishes, and each injection
+  // gets a fresh seen-set; persisting hrefs stops blocked/skipped jobs from being
+  // retried in an endless loop.
+  try {
+    const storedSeen = JSON.parse(localStorage.getItem('__aaSeenJobs') || '{}');
+    if (storedSeen.date === new Date().toDateString()) {
+      (storedSeen.hrefs || []).forEach((h) => seen.add(h));
+    }
+  } catch (_) { }
+  const persistSeen = () => {
+    try {
+      localStorage.setItem('__aaSeenJobs', JSON.stringify({ date: new Date().toDateString(), hrefs: [...seen].slice(-500) }));
+    } catch (_) { }
+  };
 
   // Reset location-fix counter daily so a new run gets fresh attempts
   const locFixDate = localStorage.getItem('__aaLocFixDate') || '';
@@ -2763,13 +2811,14 @@
 
     const job = jobs[0];
     seen.add(job.href);
+    persistSeen();
     log(`â–¶ Applying: ${job.title} @ ${job.company || '?'} | ${job.href} | ${job.salary || ''}`);
     job.linkEl.scrollIntoView({ block: 'center' });
     await sleep(500);
     job.linkEl.click(); // SPA overlay opens with the "Apply to <Company>" panel
     await sleep(3000);
 
-    const ok = await fillAndSubmit(job.company || getCompany(), job.title, job.cardText || '');
+    const ok = await fillAndSubmit(job.company || getCompany(), job.title, job.cardText || '', job.href);
     if (ok) {
       applied++;
       log(`  progress: ${applied}/${CONFIG.MAX_APPLICATIONS}`);
@@ -2781,6 +2830,10 @@
     await sleep(1000);
     await humanDelay();
   }
+
+  // Marks this injection done so the runner's idle re-injection becomes a no-op
+  // instead of restarting the same exhausted scan forever.
+  window.__aaFinished = true;
 
   log(`Finished. ${CONFIG.DRY_RUN ? 'DRY RUN â€” nothing was actually sent. Set CONFIG.DRY_RUN = false and re-run to apply for real.' : `Applied to ${applied} jobs.`}`);
 })();
