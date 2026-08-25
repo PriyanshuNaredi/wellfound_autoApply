@@ -2507,6 +2507,9 @@
     if (m) return trimCity(m[1]);
     m = text.match(/remote\s*\(([^)]+)\)/i);
     if (m) return trimCity(m[1]);
+    // Bare "Remote (United States)" on cards that lack the "Remote •" separator
+    m = text.match(/remote\s*\(\s*(united states|usa|us)\s*\)/i);
+    if (m) return 'San Francisco'; // US-remote roles accept SF-based profiles
     return '';
   }
 
