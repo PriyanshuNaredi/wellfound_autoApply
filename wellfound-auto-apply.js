@@ -1089,20 +1089,22 @@
 
       await closeVisibleApplicationModal();
 
-      // Attempt to fix by updating profile location to match the job
+      // Fix by matching the profile location to the job. The location combobox only
+      // exists on /profile/edit, so store a flag and navigate there; the resume point
+      // near the top of this script performs the edit on re-injection, then returns
+      // to /jobs where the loop retries this job under the new profile location.
       const jobLoc = extractJobLocation(cardText || panelText);
       if (jobLoc) {
         const locFixCount = parseInt(localStorage.getItem('__aaLocFixCount') || '0', 10);
-        if (locFixCount < 3) { // max 3 location fixes per session to prevent infinite loops
+        if (locFixCount < 3) { // max 3 location fixes per day — prevents loops
           localStorage.setItem('__aaLocFixCount', String(locFixCount + 1));
-          localStorage.setItem('__aaLocFix', JSON.stringify({ city: jobLoc, jobHref: location.href, targetUrl: '/jobs' }));
-          const fixed = await updateProfileLocation(jobLoc);
-          if (fixed) {
-            log(`📍 Location updated to "${jobLoc}" — job will be retried on next injection`);
-          }
-          return false; // either way, this attempt ends; retry happens on re-injection
+          localStorage.setItem('__aaLocFix', JSON.stringify({ loc: jobLoc, jobHref: location.href }));
+          log(`📍 navigating to /profile/edit to set location "${jobLoc}"`);
+          applied = CONFIG.MAX_APPLICATIONS; // end this instance cleanly
+          location.href = 'https://wellfound.com/profile/edit';
+          return false;
         } else {
-          log('📍 Location fix limit reached (3/session) — skipping this job');
+          log('📍 Location fix limit reached (3/day) — skipping this job');
         }
       } else {
         log('📍 Could not extract job location — skipping');
