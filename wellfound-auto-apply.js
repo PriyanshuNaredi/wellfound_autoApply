@@ -2529,25 +2529,55 @@
     if (!cb) { log('  ✗ location combobox not found'); return false; }
     cb.scrollIntoView({ block: 'center' });
     await sleep(400);
-    cb.click();
-    await sleep(1000);
-    const input = cb.querySelector('input') || await waitFor(() => cb.querySelector('input'), 4000);
-    if (!input) { log('  ✗ no input appeared in location combobox'); return false; }
+
+    // The display-only combobox ignores click/keyboard; the ✕ clear button is the
+    // only entry point — clicking it swaps the control to an editable input
+    // (id "downshift-0-input", placeholder "e.g. San Francisco"). Verified live.
+    let input = cb.querySelector('input');
+    if (!input) {
+      const clearBtn = cb.querySelector('[class*="close" i]');
+      if (!clearBtn) { log('  ✗ no clear button on location combobox'); return false; }
+      clearBtn.click();
+      input = await waitFor(() => cb.querySelector('input'), 6000);
+    }
+    if (!input) { log('  ✗ no editable input appeared after clearing location'); return false; }
+
     input.focus();
     setValue(input, '');
     await sleep(200);
     setValue(input, targetLoc);
+    await sleep(3000); // LocationTagAutocompleteField query + render
+
+    // Pick the best match from the visible options; prefer one STARTING with the
+    // target ("Syracuse, New York" over "Province of Syracuse").
     const lower = targetLoc.toLowerCase();
     const option = await waitFor(() => {
-      const opts = [...document.querySelectorAll('[role="option"], [role="listbox"] li, [role="listbox"] div')]
+      const opts = [...document.querySelectorAll('[role="option"]')]
         .filter((o) => (o.textContent || '').trim().length > 1);
       if (!opts.length) return null;
-      return opts.find((o) => o.textContent.toLowerCase().includes(lower)) || opts[0];
+      return opts.find((o) => o.textContent.toLowerCase().startsWith(lower)) ||
+        opts.find((o) => o.textContent.toLowerCase().includes(lower)) || opts[0];
     }, 8000);
     if (!option) { log(`  ✗ no autocomplete option for "${targetLoc}"`); return false; }
-    option.click();
-    await sleep(2500); // the field auto-saves on selection (no Save button on this page)
-    log(`  ✓ profile location set to "${(option.textContent || '').replace(/\s+/g, ' ').trim()}"`);
+
+    // Keyboard selection commits through Downshift's onChange (a plain option
+    // click was observed NOT to fire ProfileSavePrimaryLocation).
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await sleep(1500);
+    // Fallback: real click if the synthetic keys didn't commit.
+    if (findLocationCombobox()?.querySelector('input')) {
+      option.click();
+    }
+    await sleep(3000); // ProfileSavePrimaryLocation fires on selection; no Save button exists
+
+    const shown = findLocationCombobox()?.textContent || '';
+    if (!shown.toLowerCase().includes(lower.split(',')[0])) {
+      log(`  ⚠ location display does not reflect "${targetLoc}" yet: "${shown.replace(/\s+/g, ' ').trim().slice(0, 60)}"`);
+      return false;
+    }
+    log(`  ✓ profile location set to "${shown.replace(/\s+/g, ' ').trim()}"`);
     return true;
   }
 
