@@ -61,7 +61,11 @@
       "application engineer",
       "application developer",
       "platform engineer",
-      "web engineer"
+      "web engineer",
+      "Forward Deployed Engineer",
+      "Full Stack Developer",
+      "Full Stack Software Engineer",
+      "web developer"
     ],
     // Skip jobs whose title contains any of these
     TITLE_BLOCKLIST: [
@@ -163,8 +167,42 @@
     [/your name|full name|\bname\b/i, CV.name],
   ];
 
+  const aiPickRadio = async (questionContext, radios) => {
+    if (!CONFIG.geminiKey) return null;
+    const options = radios.map((r, i) => `${i}. ${labelTextOf(r)}`).join('\n');
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${CONFIG.geminiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text:
+                  `You are answering a job application question on my behalf. Given the question and available options, return ONLY the index number (0-based) of the best answer. Be truthful and pick what makes me the strongest candidate.\n\nMy CV:\n${JSON.stringify(CV)}\n\nQuestion: ${questionContext}\n\nOptions:\n${options}\n\nReturn ONLY the index number, nothing else.`
+              }]
+            }],
+          }),
+        }
+      );
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (text) {
+        const idx = parseInt(text, 10);
+        if (!isNaN(idx) && idx >= 0 && idx < radios.length) {
+          log(`  \u{1F916} AI picked radio option ${idx}: “${labelTextOf(radios[idx]).slice(0, 60)}”`);
+          return radios[idx];
+        }
+      }
+    } catch (e) {
+      log('  \u26A0 AI radio pick failed:', e.message);
+    }
+    return null;
+  };
+
   const GENERIC_ANSWER =
-    `I'm ${CV.name}, ${CV.currentRole}. Happy to elaborate in an interview â€” key highlights: ` +
+    `I'm ${CV.name}, ${CV.currentRole}. Happy to elaborate in an interview — key highlights: ` +
     CV.highlights.slice(0, 2).join('; ') + '.';
 
   // ============== COVER LETTER (per-job: company + title filled in) ==============
@@ -1418,6 +1456,7 @@
               )
             )
         ) ||
+        await aiPickRadio(context, group) ||
         group[0];
 
       if (
@@ -1436,7 +1475,7 @@
     }
 
     // Force required compliance questions that are frequently missed by DOM heuristics.
-    const forceComplianceAnswers = () => {
+    const forceComplianceAnswers = async () => {
       const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim();
 
       const clickNativeRadio = (input) => {
@@ -1484,17 +1523,19 @@
           continue;
         }
 
-        // Any still-required generic custom question: pick first option.
+        // Any still-required generic custom question: use AI to pick, fall back to first option.
         const required = /\*/.test(questionText) || /this question is required/i.test(normalize(group.textContent));
         if (required && radios[0]) {
-          if (clickNativeRadio(radios[0])) {
-            log('  ☑ forced required custom radio: first option');
+          const aiPick = await aiPickRadio(questionText, radios);
+          const chosen = aiPick || radios[0];
+          if (clickNativeRadio(chosen)) {
+            log(`  ☉ forced required custom radio: ${labelTextOf(chosen).slice(0, 60)}`);
           }
         }
       }
     };
 
-    forceComplianceAnswers();
+    await forceComplianceAnswers();
 
     // ============================================================
     // CHECKBOXES
@@ -1668,6 +1709,7 @@
       let pick =
         group.find((radio) => /^(yes)\b/i.test(labelTextOf(radio).trim())) ||
         group.find((radio) => /^(no)\b/i.test(labelTextOf(radio).trim())) ||
+        await aiPickRadio(context, group) ||
         group[0];
 
       if (pick && !radioIsChecked(pick)) {
@@ -1802,7 +1844,9 @@
       } else if (/require visa sponsorship|visa sponsorship|require sponsorship/i.test(context)) {
         pick = group.find((radio) => /^(no)\b/i.test(labelTextOf(radio).trim())) || group[0];
       } else {
-        pick = group.find((radio) => /^(yes)\b/i.test(labelTextOf(radio).trim())) || group[0];
+        pick = group.find((radio) => /^(yes)\b/i.test(labelTextOf(radio).trim())) ||
+          await aiPickRadio(context, group) ||
+          group[0];
       }
 
       if (pick && !radioIsChecked(pick)) {
@@ -2156,7 +2200,7 @@
 
     // Run one last compliance click pass right before submit in case
     // Wellfound re-rendered radio options while typing long answers.
-    forceComplianceAnswers();
+    await forceComplianceAnswers();
 
     // ============================================================
     // DRY RUN
@@ -2246,7 +2290,7 @@
     ) {
 
       // One strict retry: radios may not be committed after textarea updates.
-      forceComplianceAnswers();
+      await forceComplianceAnswers();
       await sleep(200);
 
       const retrySend = findRealSendButton(panel, false) || findRealSendButton();
@@ -2332,8 +2376,8 @@
   const titleOk = (t) => {
     const lower = t.toLowerCase();
 
-    return CONFIG.TITLE_KEYWORDS.some((k) => lower.includes(k)) &&
-      !CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k));
+    return CONFIG.TITLE_KEYWORDS.some((k) => lower.includes(k.toLowerCase())) &&
+      !CONFIG.TITLE_BLOCKLIST.some((k) => lower.includes(k.toLowerCase()));
   };
 
   // Check experience requirements from the job card/description.
@@ -2366,13 +2410,13 @@
       if (SELECTORS.alreadyApplied.test([...row.querySelectorAll('button, span')].map((e) => e.textContent.trim()).find((t) => /^applied$/i.test(t)) || '')) continue;
       // only fresh jobs: skip anything posted more than 14 days ago (cards without a
       // "posted X ago" stamp are kept â€” wellfound delists stale jobs anyway)
-      const posted = row.textContent.match(/posted (?:about )?(\d+)\+? ?(day|week|month)s? ago/i);
-      if (posted) {
-        const n = +posted[1];
-        const unit = posted[2].toLowerCase();
-        const days = unit === 'day' ? n : unit === 'week' ? n * 7 : n * 30;
-        if (days > 14) continue;
-      }
+      const posted = row.textContent.match(/posted[: ] ?(?:about )?(\d+)\+? ?(day|week|month)s? ago/i);
+        if (posted) {
+          const n = +posted[1];
+          const unit = posted[2].toLowerCase();
+          const days = unit === 'day' ? n : unit === 'week' ? n * 7 : n * 30;
+          if (days > 45) continue;
+        }
       const company = (row.querySelector('img[alt*="logo" i]')?.alt || '')
         .replace(/company logo/i, '').trim();
       const salary = (row.textContent.match(/(?:â‚¹|\$|â‚¬)\s?[\d.,k]+\s?(?:[â€“-]\s?(?:â‚¹|\$|â‚¬)?\s?[\d.,k]+)?k?/i) || [''])[0].trim();
