@@ -526,7 +526,7 @@
   //
   // ===============================================================
 
-  async function fillAndSubmit(company, title) {
+  async function fillAndSubmit(company, title, cardText) {
 
     log(
       `  🔎 Wellfound application flow: ${company} / ${title}`
@@ -1084,10 +1084,29 @@
       )
     ) {
       log(
-        '🚫 application blocked by location/timezone — skipping'
+        '🚫 application blocked by location/timezone — attempting location fix'
       );
 
       await closeVisibleApplicationModal();
+
+      // Attempt to fix by updating profile location to match the job
+      const jobLoc = extractJobLocation(cardText || panelText);
+      if (jobLoc) {
+        const locFixCount = parseInt(localStorage.getItem('__aaLocFixCount') || '0', 10);
+        if (locFixCount < 3) { // max 3 location fixes per session to prevent infinite loops
+          localStorage.setItem('__aaLocFixCount', String(locFixCount + 1));
+          localStorage.setItem('__aaLocFix', JSON.stringify({ city: jobLoc, jobHref: location.href, targetUrl: '/jobs' }));
+          const fixed = await updateProfileLocation(jobLoc);
+          if (fixed) {
+            log(`📍 Location updated to "${jobLoc}" — job will be retried on next injection`);
+          }
+          return false; // either way, this attempt ends; retry happens on re-injection
+        } else {
+          log('📍 Location fix limit reached (3/session) — skipping this job');
+        }
+      } else {
+        log('📍 Could not extract job location — skipping');
+      }
 
       return false;
     }
@@ -2464,8 +2483,104 @@
     return true;
   }
 
+  // ======================= LOCATION FIX (profile location auto-update) =======================
+  // Some companies reject applications "from your current location". When that happens we
+  // rewrite the profile location (the "Where are you based?" combobox on /profile/edit) to
+  // match the job, then come back to /jobs and retry. Guarded per-job + per-day so it can
+  // never loop. On any failure we degrade to the old behaviour (skip the job).
+
+  function extractJobLocation(cardText) {
+    const text = (cardText || '').replace(/\s+/g, ' ');
+    let m;
+    m = text.match(/job location[:\s]+([A-Za-z][A-Za-z .,'-]{1,40})/i);
+    if (m) return m[1].trim();
+    m = text.match(/hires remotely in[:\s]+([A-Za-z][A-Za-z .,'-]{1,40})/i);
+    if (m) return m[1].trim();
+    m = text.match(/remote\s*\([^)]*\)\s*[•·]\s*([A-Za-z][A-Za-z .,'-]{1,40})/i);
+    if (m) return m[1].trim();
+    m = text.match(/remote\s*\(([^)]+)\)/i);
+    if (m) return m[1].trim();
+    return '';
+  }
+
+  // The location field is a Downshift combobox; its id changes every page load, so anchor on
+  // the "Where are you based?" title and walk up to the nearest [role="combobox"].
+  function findLocationCombobox() {
+    const titles = [...document.querySelectorAll('div')].filter((d) =>
+      /^where are you based\??$/i.test((d.textContent || '').replace(/\s+/g, ' ').trim()) &&
+      d.children.length === 0
+    );
+    for (const t of titles) {
+      let node = t;
+      for (let i = 0; i < 8 && node; i++) {
+        const cb = node.querySelector ? node.querySelector('[role="combobox"]') : null;
+        if (cb) return cb;
+        node = node.parentElement;
+      }
+    }
+    return null;
+  }
+
+  async function updateProfileLocation(targetLoc) {
+    if (!targetLoc) return false;
+    const cb = await waitFor(() => findLocationCombobox(), 12000);
+    if (!cb) { log('  ✗ location combobox not found'); return false; }
+    cb.scrollIntoView({ block: 'center' });
+    await sleep(400);
+    cb.click();
+    await sleep(1000);
+    const input = cb.querySelector('input') || await waitFor(() => cb.querySelector('input'), 4000);
+    if (!input) { log('  ✗ no input appeared in location combobox'); return false; }
+    input.focus();
+    setValue(input, '');
+    await sleep(200);
+    setValue(input, targetLoc);
+    const lower = targetLoc.toLowerCase();
+    const option = await waitFor(() => {
+      const opts = [...document.querySelectorAll('[role="option"], [role="listbox"] li, [role="listbox"] div')]
+        .filter((o) => (o.textContent || '').trim().length > 1);
+      if (!opts.length) return null;
+      return opts.find((o) => o.textContent.toLowerCase().includes(lower)) || opts[0];
+    }, 8000);
+    if (!option) { log(`  ✗ no autocomplete option for "${targetLoc}"`); return false; }
+    option.click();
+    await sleep(2500); // the field auto-saves on selection (no Save button on this page)
+    log(`  ✓ profile location set to "${(option.textContent || '').replace(/\s+/g, ' ').trim()}"`);
+    return true;
+  }
+
+  // Resume point: if we were redirected to /profile/edit to fix the location, do it and go back.
+  try {
+    const locFixRaw = localStorage.getItem('__aaLocFix');
+    if (locFixRaw) {
+      if (/\/profile\/edit/.test(location.pathname)) {
+        const locFix = JSON.parse(locFixRaw);
+        log(`📍 Location fix: updating profile location to "${locFix.loc}"`);
+        await sleep(3000); // let the profile-edit page fully hydrate
+        const ok = await updateProfileLocation(locFix.loc);
+        localStorage.removeItem('__aaLocFix');
+        log(`📍 Location fix ${ok ? 'succeeded' : 'FAILED'} — returning to /jobs`);
+        await sleep(1500);
+        location.href = 'https://wellfound.com/jobs';
+        return; // this instance stops; the re-injection on /jobs resumes applying
+      } else {
+        localStorage.removeItem('__aaLocFix'); // stale flag (navigation never landed) — clear it
+      }
+    }
+  } catch (e) {
+    log('📍 Location fix resume error:', e.message);
+    try { localStorage.removeItem('__aaLocFix'); } catch (_) { }
+  }
+
   let applied = 0;
   const seen = new Set();
+
+  // Reset location-fix counter daily so a new run gets fresh attempts
+  const locFixDate = localStorage.getItem('__aaLocFixDate') || '';
+  if (locFixDate !== new Date().toDateString()) {
+    localStorage.setItem('__aaLocFixDate', new Date().toDateString());
+    localStorage.setItem('__aaLocFixCount', '0');
+  }
 
   log(`Starting. DRY_RUN=${CONFIG.DRY_RUN}, max=${CONFIG.MAX_APPLICATIONS}`);
   log('Tip: keep this tab focused and do not navigate away.');
@@ -2622,7 +2737,7 @@
     job.linkEl.click(); // SPA overlay opens with the "Apply to <Company>" panel
     await sleep(3000);
 
-    const ok = await fillAndSubmit(job.company || getCompany(), job.title);
+    const ok = await fillAndSubmit(job.company || getCompany(), job.title, job.cardText || '');
     if (ok) {
       applied++;
       log(`  progress: ${applied}/${CONFIG.MAX_APPLICATIONS}`);
