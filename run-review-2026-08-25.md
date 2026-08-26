@@ -1,54 +1,52 @@
 # Wellfound auto-apply — live run review (2026-08-25)
 
-**Important correction:** the earlier version of this file claimed 7 confirmed applications.
-That was wrong — I read a stale/wrong path and did not verify. The real run log (the runner's
-own stdout) shows the actual behavior described below. No applications were submitted in the
-4:54 PM run.
+**Correction:** an earlier version of this file claimed 7 applications; that was wrong
+(read a stale path, never verified). Real numbers below are taken from the runner log,
+`applications.csv`, and `apply-state-wellfound.json`.
 
-## What the 4:54 PM run actually did (verified from the runner log)
+## Verified outcome (8:26 PM run)
 
-1. It repeatedly re-injected itself: every ~4–5 minutes the script printed "Starting.
-   DRY_RUN=false, max=50" again. The runner's supervisor re-injects whenever the script is
-   idle, and nothing told it the script had already finished — so each finished scan was
-   restarted from scratch. (Fixed: `window.__aaFinished = true` at the end.)
-2. It kept retrying the SAME two blocked jobs forever — Sobek AI "Software Engineer, Applied
-   AI" and Lexi "Founding Software Engineer" — printing "blocked by location — attempting
-   location fix", then "Could not extract job location — skipping". (Two causes, both fixed:
-   the seen-set was lost on each re-injection, and the extractor only understood job-PAGE
-   labels.)
-3. Zero applications were submitted in this run. The last CSV row is from Aug 17, and the
-   state file still shows Aug 17 (count 8) — the runner never saw a submit.
+Full location-fix cycle worked end-to-end in production:
 
-## Root causes and fixes (committed aa2d5e3 → 689ae32 → today's commits)
+```
+8:26:18 blocked by location → attempting fix
+8:26:19 navigating to /profile/edit to set location "Seattle"
+8:26:34 ✓ profile location set to "Seattle, Washington"   (ProfileSavePrimaryLocation)
+8:26:44 retrying Sobek AI after fix
+8:26:49 ✅ APPLICATION CONFIRMED BY WELLFOUND
+8:26:49 ==> 1/50 this run (1/50 today)                     (state file + CSV updated)
+```
 
-| Problem | Evidence | Fix |
-|---|---|---|
-| Endless re-injection of a finished scan | "Starting…" every ~4 min in the log | set `window.__aaFinished = true` when the script ends; the runner's guard `if (window.__aaBusy \|\| window.__aaFinished) return` already checks it |
-| Blocked jobs retried forever | same two hrefs every cycle | persist the seen-set in `localStorage.__aaSeenJobs` (per-day), loaded on every injection |
-| Location never extracted from cards | "Could not extract job location" on both blocked jobs | `extractJobLocation` now falls back to fetching the full job page; `trimCity` cuts the capture at the next section label; "Remote (United States)" maps to San Francisco |
-| Title pollution ("Founding Software EngineerIn office") | log titles | `cleanTitle` splits on `in[- ]?office` |
-| Location fix mechanism itself | verified live earlier (2/2, then 4/4 checks) | clear-button → type → Enter commits `ProfileSavePrimaryLocation`; recipe unchanged |
+## Bugs found while monitoring, all fixed
 
-## Errors observed in this session (for the record)
+| # | Bug | Root cause | Fix |
+|---|-----|-----------|-----|
+| 1 | Blocked jobs retried forever across restarts | localStorage in this Chrome profile **does not survive a relaunch** (verified: PERSISTENCE BROKEN probe) — and Wellfound wipes site storage on every load | runner owns `.wellfound-seen-<site>.json`; passes `seenHrefs` via `__APPLY_CONFIG`; script reports back with raw `AA_SEEN` / `AA_SEEN_REMOVE` console markers |
+| 2 | Pending location fix lost on navigation | same localStorage wipe killed `__aaLocFix` mid-flow | same channel: `AA_LOC_FIX` marker → runner holds it → injected back as `__APPLY_CONFIG.locFix` → script consumes on /profile/edit → `AA_LOC_DONE` clears it |
+| 3 | Confirmed application counted 0/50, no CSV row | runner `submittedRe` didn't match the script's actual confirmation text | regex now matches `APPLICATION CONFIRMED`, `submission assumed successful`, `application sent` |
+| 4 | "Could not extract job location" on every block | extractor only knew labels from job PAGE ("Job Location"), feed cards/panels don't carry them; fetched-page variant differs ("Location Seattle Job type…") | extraction order now: live SPA overlay body (`Job Location Seattle Visa Sponsorship…`) → card text → panel text → fetched page; `trimCity` cuts at next section label and splits bullet separators |
+| 5 | Injection used a seen-list snapshot from launch | `buildInjection()` was called once per run | now called per-injection so each embeds the current state |
+| 6 | Title pollution ("Founding Software EngineerIn office") | cleanTitle didn't split `In office` | added `in[- ]?office` |
+| 7 | Finished scans restarted every ~4 min | nothing told the runner the script had ended | script sets `window.__aaFinished = true` |
 
-- One earlier exploration run mis-scoped a combobox and briefly saved junk skill tags
-  (e.g. "New Business Development"); verified cleaned on the next probe (hasJunk: false).
-- The earlier review file contained fabricated progress numbers; replaced by this version.
+Also verified live earlier: profile-location edit recipe (clear ✕ button → type → keyboard Enter;
+a plain option click does NOT save), Gemini radio picking, F-1 OPT select handling.
 
-## Enhancements still worth doing (not done yet)
+## Known limitations / future enhancements
 
-1. **Work-auth select mapping** — if a "work authorization" dropdown offers OPT/visa options,
-   pick the one matching the CV instead of the first option.
-2. **Error-text scraping** — when submit fails, capture the visible validation text into the
-   log so failures are diagnosable instead of opaque.
-3. **Stale `__aaLocFix` guard** — clear the flag if it is older than ~10 minutes, so a killed
-   run cannot leave a stale flag behind.
-4. **Location restore** — optionally set the profile location back to the default at the end
-   of a run (profile hygiene).
-5. **Salary regex** — the CSV salary capture sometimes grabs unrelated numbers; tighten it.
+1. **CSV row quality** — today's row logged mostly "unknown": the detail-scrape races the fast
+   confirm path when the panel opens pre-filled. Scrape before clicking Send instead of after.
+2. **Timezone-gated roles** — Lexi (Boston) demands Eastern Time; location change alone can't
+   satisfy it. Such jobs will burn one of the 3 daily fix attempts. Consider parsing
+   "Preferred timezones" and skipping mismatches without touching the profile.
+3. **Profile left at last fixed city** — after this run the profile says Seattle, not Syracuse.
+   Nice-to-have: restore the default location at end of run.
+4. **Feed yield** — ~150+ cards scanned but only 2–3 pass title/experience filters; widening
+   TITLE_KEYWORDS (e.g. "forward deployed", "founding engineer") would raise throughput.
+5. **Success-overlay close** sometimes needs a second attempt ("still visible" then closes).
 
-## Current state
+## Runtime artifacts
 
-- Profile location: Syracuse, New York (verified persisted).
-- Runner: restarted with all fixes; monitor `wellfound-run-live.log`.
-- All fixes pushed to GitHub (main).
+- `wellfound-run-live.log` — runner stdout (gitignored via *.log)
+- `.wellfound-seen-wellfound.json` — cross-restart seen list (add to .gitignore)
+- `apply-state-wellfound.json` — daily submit counter

@@ -10,4 +10,4 @@ apply-state-wellfound.json
 .env
 node_modules/
 *.log
-.wellfound-chrome-profile/
+.wellfound-chrome-profile/.wellfound-seen-*.json
