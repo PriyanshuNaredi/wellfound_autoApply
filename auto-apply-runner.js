@@ -332,8 +332,10 @@ function buildInjection() {
         page.screenshot({ path: path.join(__dirname, `blocked-step-${SITE_ARG}.png`) }).catch(() => { });
       }
 
-      // "▶ Applying: <title> @ <company>" (wellfound) / "▶ Opening: <title>" (indeed)
-      const m = clean.match(/▶ (?:Applying|Opening): (.+)/);
+      // "▶ Applying: <title> @ <company>" (wellfound) / "▶ Opening: <title>" (indeed).
+      // Match the ASCII part only — the emoji can arrive mojibake-encoded through the
+      // console transport and silently break the CSV capture.
+      const m = clean.match(/(?:Applying|Opening): (.+)/);
       if (m) {
         const [main, link, cardSalary] = m[1].split(' | ');
         const atParts = main.split(' @ ');

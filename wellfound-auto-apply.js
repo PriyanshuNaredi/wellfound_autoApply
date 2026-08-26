@@ -115,6 +115,9 @@
       "ruby",
       "php",
       "ruby on rails",
+      "head of",
+      "vp",
+      "vice president",
     ],
     // Experience filter: target entry-level / new-grad roles
     MAX_YEARS_EXPERIENCE: 3,
@@ -135,8 +138,11 @@
       /\b5\s*-\s*8\s*years?\b/i,
       /\b6\s*-\s*8\s*years?\b/i,
       /\b(?:10|11|12|13|14|15|20)\s*-\s*(?:12|13|14|15|20)\s*years?\b/i,
-      /\b(?:senior|staff|principal|lead|director|head|vp)\b(?:[- ]level)?\b/i,
-      /\b(?:senior|staff|principal|lead|director)\s+(?:engineer|developer|software|full[- ]stack|backend|frontend|platform|ml|ai)\b/i,
+      // bare seniority words are too blunt for whole-card text ("report to the
+      // director of…", "you will lead…"); only reject a seniority word glued
+      // to a role title, plus the "-level" adjective form
+      /\b(?:senior|staff|principal|lead|sr\.?)\b[\w(),.\s-]{0,24}\b(?:engineer|developer|swe|sde)\b/i,
+      /\b(?:senior|staff|principal|lead|director|head|vp)[- ]level\b/i,
       /\b10\+\s*(?:years?|yrs?)\s*(?:of|in)\s*experience\b/i,
       /\bminimum\s+\d+\+?\s*years?\s*(?:of|in)\s*experience\b/i
     ],
@@ -2168,9 +2174,61 @@
 
       } else {
 
+        // the close-button click didn't take; fall back to Escape, then to
+        // stripping the overlay from the DOM so the feed is usable again
         log(
-          '  ⚠ success overlay is still visible'
+          '  ⚠ success overlay resisted close — trying Escape'
         );
+
+        try {
+
+          const esc = () => new KeyboardEvent(
+            'keydown',
+            { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }
+          );
+
+          document.dispatchEvent(esc());
+          document.body.dispatchEvent(esc());
+
+        } catch (_) { }
+
+        await sleep(1200);
+
+        const stuck = [
+          ...document.querySelectorAll(
+            '[role="dialog"], [class*="modal" i], [class*="Modal" i]'
+          )
+        ].filter(visible).filter(el => {
+
+          const text = el.innerText || el.textContent || '';
+
+          return (
+            /application has been sent/i.test(text) ||
+            /application sent/i.test(text) ||
+            /application submitted/i.test(text) ||
+            /has been submitted/i.test(text) ||
+            /success.*application/i.test(text)
+          );
+
+        });
+
+        if (stuck.length) {
+
+          for (const el of stuck) el.remove();
+
+          log(
+            `  ⚠ removed ${stuck.length} stuck success overlay(s) from the DOM`
+          );
+
+          await sleep(1200);
+
+        } else {
+
+          log(
+            '  ✓ Wellfound success overlay closed via Escape'
+          );
+
+        }
 
       }
 
@@ -2786,6 +2844,19 @@
       if (grew) {
         continue;
       }
+
+      // why is this view empty? tally rejection reasons so exhaustion is diagnosable
+      const finalRows = findJobRows();
+      let seenCount = 0, titleMismatch = 0, expBlocked = 0, stillEligible = 0;
+      const mismatchSamples = [];
+      for (const j of finalRows) {
+        if (seen.has(j.href)) { seenCount++; continue; }
+        if (!titleOk(j.title)) { titleMismatch++; if (mismatchSamples.length < 6) mismatchSamples.push(j.title); continue; }
+        if (!experienceOk(j.cardText || (j.title + ' ' + j.company))) { expBlocked++; continue; }
+        stillEligible++;
+      }
+      log(`  exhaustion tally: ${finalRows.length} cards — seen=${seenCount}, title-mismatch=${titleMismatch}, experience-blocked=${expBlocked}, eligible=${stillEligible}`);
+      if (mismatchSamples.length) log(`  title-mismatch samples: ${mismatchSamples.map((t) => `"${String(t).slice(0, 48)}"`).join(' | ')}`);
 
       log(
         'No eligible jobs found after 10 scrolls. Search exhausted.'
