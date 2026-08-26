@@ -1093,10 +1093,13 @@
       // exists on /profile/edit, so store a flag and navigate there; the resume point
       // near the top of this script performs the edit on re-injection, then returns
       // to /jobs where the loop retries this job under the new profile location.
-      let jobLoc = extractJobLocation(cardText || panelText);
+      let jobLoc = extractJobLocation(cardText || '')
+        || extractJobLocation(panelText)
+        // the SPA overlay behind the apply panel carries the full job details
+        // ("Job Location Seattle Visa Sponsorship …") — richest source, no network
+        || extractJobLocation((document.body.innerText || '').replace(/\s+/g, ' '));
       if (!jobLoc && jobHref) {
-        // Feed cards rarely carry structured location text; the full job page does.
-        log('📍 no location on card — fetching the job page');
+        log('📍 no location in DOM — fetching the job page');
         jobLoc = await fetchJobLocation(jobHref);
       }
       if (jobLoc) {
@@ -2516,8 +2519,9 @@
   // Card/page text runs the city straight into the next label ("San Francisco Remote
   // Work Policy..."); cut the capture at the first known section label.
   function trimCity(raw) {
-    const stop = (raw || '').search(/\b(remote work policy|remote work|hires remotely|visa sponsorship|relocation|skills|about the job|about the role|what you|what success|posted|recruiter recently|employees)\b/i);
-    return (stop > 0 ? raw.slice(0, stop) : raw).replace(/[|\s,]+$/, '').trim();
+    const stop = (raw || '').search(/\b(remote work policy|remote work|hires remotely|visa sponsorship|relocation|skills|about the job|about the role|what you|what success|posted|recruiter recently|employees|job type|preferred timezone|timezones|company size|benefits)\b/i);
+    const head = (stop > 0 ? raw.slice(0, stop) : raw).split(/[•·|]/)[0];
+    return head.replace(/[|\s,]+$/, '').trim();
   }
 
   // Same-origin fetch of the full job page; its "Job Location" / "Hires remotely in"
@@ -2624,6 +2628,7 @@
             const storedSeen = JSON.parse(localStorage.getItem('__aaSeenJobs') || '{}');
             storedSeen.hrefs = (storedSeen.hrefs || []).filter((h) => h !== locFix.jobHref);
             localStorage.setItem('__aaSeenJobs', JSON.stringify(storedSeen));
+            console.log('AA_SEEN_REMOVE ' + locFix.jobHref); // unblock on the runner side too
           } catch (_) { }
         }
         localStorage.removeItem('__aaLocFix');
@@ -2646,16 +2651,23 @@
   // The runner re-injects this script every time it finishes, and each injection
   // gets a fresh seen-set; persisting hrefs stops blocked/skipped jobs from being
   // retried in an endless loop.
+  // Seen-jobs restore: localStorage works within one browser session but this
+  // profile wipes it on relaunch, so the runner ALSO passes today's hrefs in
+  // window.__APPLY_CONFIG.seenHrefs (persisted to .wellfound-seen-<site>.json).
+  ((__CFG.seenHrefs) || []).forEach((h) => h && seen.add(h));
   try {
     const storedSeen = JSON.parse(localStorage.getItem('__aaSeenJobs') || '{}');
     if (storedSeen.date === new Date().toDateString()) {
       (storedSeen.hrefs || []).forEach((h) => seen.add(h));
     }
   } catch (_) { }
+  if (seen.size) log(`↩ restored ${seen.size} previously-seen jobs`);
   const persistSeen = () => {
     try {
       localStorage.setItem('__aaSeenJobs', JSON.stringify({ date: new Date().toDateString(), hrefs: [...seen].slice(-500) }));
-    } catch (_) { }
+    } catch (e) {
+      log('⚠ seen persist failed:', e.message);
+    }
   };
 
   // Reset location-fix counter daily so a new run gets fresh attempts
@@ -2815,6 +2827,7 @@
     const job = jobs[0];
     seen.add(job.href);
     persistSeen();
+    console.log('AA_SEEN ' + job.href); // runner persists this across restarts
     log(`â–¶ Applying: ${job.title} @ ${job.company || '?'} | ${job.href} | ${job.salary || ''}`);
     job.linkEl.scrollIntoView({ block: 'center' });
     await sleep(500);

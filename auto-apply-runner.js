@@ -79,7 +79,7 @@ const SITES = {
     searches: ['https://wellfound.com/jobs'],
     loginUrl: 'https://wellfound.com/login',
     injectOn: (url) => /wellfound\.com/.test(url),
-    submittedRe: /application sent|DRY_RUN — would click/i,
+    submittedRe: /APPLICATION CONFIRMED|submission assumed successful|application sent|DRY_RUN — would click/i,
     storeKey: null, // wellfound script keeps no localStorage state
     dailyCap: 50,
   },
@@ -119,6 +119,20 @@ const todayKey = new Date().toDateString();
 let dayState = { date: todayKey, count: 0 };
 try { const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8').replace(/^﻿/, '')); if (s.date === todayKey) dayState = s; } catch (e) { }
 const bumpDayCount = () => { dayState.count++; try { fs.writeFileSync(STATE_FILE, JSON.stringify(dayState)); } catch (e) { } };
+
+// Cross-restart memory of jobs already attempted today. The browser profile
+// wipes localStorage between launches, so the Node side owns this list in a
+// JSON file; the console script reports additions via "AA_SEEN <href>" markers.
+const SEEN_FILE = path.join(__dirname, `.wellfound-seen-${SITE_ARG}.json`);
+const seenState = (() => {
+  try { const s = JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8')); if (s.date === todayKey && Array.isArray(s.hrefs)) return s; } catch (e) { }
+  return { date: todayKey, hrefs: [] };
+})();
+let seenSaveTimer = null;
+const saveSeen = () => {
+  clearTimeout(seenSaveTimer);
+  seenSaveTimer = setTimeout(() => { try { fs.writeFileSync(SEEN_FILE, JSON.stringify(seenState)); } catch (e) { } }, 2000);
+};
 const TARGET = DAILY_CAP - dayState.count;
 const MAX_RUNTIME_MS = 100 * 60 * 1000;
 const IDLE_ROTATE_MS = 4 * 60 * 1000;
@@ -156,7 +170,7 @@ function buildInjection() {
   return `(async () => {
     if (window.__aaBusy || window.__aaFinished) return;
     window.__aaBusy = true;
-    window.__APPLY_CONFIG = ${JSON.stringify({ CV, geminiKey })};
+    window.__APPLY_CONFIG = ${JSON.stringify({ CV, geminiKey, seenHrefs: seenState.hrefs })};
     try { await ${raw}
     } finally { window.__aaBusy = false; }
   })()`;
@@ -208,7 +222,6 @@ function buildInjection() {
   }
 
   log(`Starting. mode=${LIVE ? 'LIVE' : 'DRY RUN'} target=${TARGET} applications, max ${MAX_RUNTIME_MS / 60000} min`);
-  const injection = buildInjection();
   const deadline = Date.now() + MAX_RUNTIME_MS;
   let submitted = 0;
   let lastActivity = Date.now();
@@ -220,6 +233,16 @@ function buildInjection() {
   function wire(page) {
     page.on('console', (msg) => {
       const text = msg.text();
+      // raw markers from the console script (no [auto-apply] prefix)
+      const sm = text.trim().match(/^AA_SEEN(_REMOVE)? (\S+)/);
+      if (sm) {
+        lastActivity = Date.now();
+        const href = sm[2];
+        if (sm[1]) seenState.hrefs = seenState.hrefs.filter((h) => h !== href);
+        else if (!seenState.hrefs.includes(href)) seenState.hrefs.push(href);
+        saveSeen();
+        return;
+      }
       if (!/auto-apply/.test(text)) return;
       lastActivity = Date.now();
       const clean = text.replace(/%c\[auto-apply\]\s*\S*/, '').trim();
@@ -284,7 +307,7 @@ function buildInjection() {
           } catch (e) { }
         }, [site.storeKey, new Date().toDateString()]).catch(() => { });
       }
-      await page.evaluate(injection).catch(() => { }); // navigation mid-run is normal
+      await page.evaluate(buildInjection()).catch(() => { }); // navigation mid-run is normal
     });
   }
 
@@ -298,7 +321,7 @@ function buildInjection() {
   if (/sign in|log in to continue|create an account|verify you are human/i.test(bodyText) && !/sign out/i.test(bodyText)) {
     log('WARNING: page looks logged-out or bot-checked. If runs keep finding 0 jobs, run: node auto-apply-runner.js ' + SITE_ARG + ' login');
   }
-  await mainPage.evaluate(injection).catch(() => { });
+  await mainPage.evaluate(buildInjection()).catch(() => { });
 
   // Supervisor: re-inject the search tab when idle, close finished form tabs,
   // rotate searches on inactivity, stop on target/time.
@@ -326,7 +349,7 @@ function buildInjection() {
         log(`Rotating to next search: ${site.searches[searchIdx]}`);
         await mainPage.goto(site.searches[searchIdx], { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => { });
       } else {
-        await mainPage.evaluate(injection).catch(() => { }); // continue with next job on this page
+        await mainPage.evaluate(buildInjection()).catch(() => { }); // continue with next job on this page
       }
     }
   }
