@@ -60,5 +60,8 @@ const CV = {
 const CREDS = { email: g('GOOGLE_EMAIL') || g('EMAIL'), password: g('GOOGLE_PASSWORD') };
 const geminiKey = g('GEMINI_KEY');
 const naukriProfileUrl = g('NAUKRI_PROFILE_URL', 'https://www.naukri.com/mnjuser/profile');
+// Wellfound profile location is restored to this when an auto-run finishes
+// (jobs in other cities temporarily change it). Override via HOME_LOCATION in .env.
+const homeLocation = g('HOME_LOCATION') || 'Syracuse';
 
-module.exports = { CV, CREDS, geminiKey, naukriProfileUrl };
+module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, homeLocation };

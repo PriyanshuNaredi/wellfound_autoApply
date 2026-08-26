@@ -38,8 +38,11 @@
     MIN_DELAY_MS: 60000,       // wait between applications (randomized between min/max)
     MAX_DELAY_MS: 150000,
     geminiKey: __CFG.geminiKey || '',   // optional: Gemini API key for unmatched questions
+    HOME_LOCATION: __CFG.homeLocation || '', // profile location is restored to this when the run ends
 
     // Job titles to apply to (case-insensitive substring match on the job title)
+    // Tuned to the resume: full-stack (React/Next.js/TS), Python backends
+    // (FastAPI/Django/Node), AI-LLM systems (LangGraph/RAG/MCP), Go/AWS cloud.
     TITLE_KEYWORDS: [
       "software engineer",
       "software developer",
@@ -47,25 +50,53 @@
       "sde",
       "backend engineer",
       "backend developer",
+      "back-end",
+      "back end",
       "full stack engineer",
       "full-stack engineer",
       "fullstack engineer",
+      "full stack developer",
+      "full-stack developer",
+      "fullstack developer",
       "frontend engineer",
       "frontend developer",
+      "front-end",
       "python engineer",
       "python developer",
+      "django",
+      "fastapi",
+      "golang",
+      "go developer",
+      "go engineer",
+      "cloud engineer",
+      "platform engineer",
+      "web engineer",
+      "web developer",
+      "react developer",
+      "react engineer",
+      "node developer",
+      "nodejs developer",
+      "node.js developer",
+      "mern",
+      "mean stack",
+      "typescript developer",
+      "typescript engineer",
+      "next.js developer",
+      "application engineer",
+      "application developer",
       "machine learning engineer",
       "ml engineer",
       "ai engineer",
       "ai developer",
-      "application engineer",
-      "application developer",
-      "platform engineer",
-      "web engineer",
-      "Forward Deployed Engineer",
-      "Full Stack Developer",
-      "Full Stack Software Engineer",
-      "web developer"
+      "ai/ml engineer",
+      "applied ai",
+      "llm engineer",
+      "genai",
+      "generative ai",
+      "agentic",
+      "forward deployed",
+      "forward-deployed",
+      "founding engineer",
     ],
     // Skip jobs whose title contains any of these
     TITLE_BLOCKLIST: [
@@ -1107,6 +1138,7 @@
         if (locFixCount < 3) { // max 3 location fixes per day — prevents loops
           try { localStorage.setItem('__aaLocFixCount', String(locFixCount + 1)); } catch (_) { }
           console.log('AA_LOC_FIX ' + JSON.stringify({ loc: jobLoc, jobHref: jobHref || location.href }));
+          locationFixUsedThisRun = true;
           log(`📍 navigating to /profile/edit to set location "${jobLoc}"`);
           applied = CONFIG.MAX_APPLICATIONS; // end this instance cleanly
           location.href = 'https://wellfound.com/profile/edit';
@@ -2632,6 +2664,7 @@
   }
 
   let applied = 0;
+  let locationFixUsedThisRun = false; // set when a job forced a profile-location change
   const seen = new Set();
 
   // The runner re-injects this script every time it finishes, and each injection
@@ -2831,6 +2864,17 @@
       findButtonByText(document, /^Ã—$|^âœ•$/))?.click();
     await sleep(1000);
     await humanDelay();
+  }
+
+  // End-of-run hygiene: if a job forced the profile location elsewhere today,
+  // hand the runner a final fix request so the resume point puts it back to
+  // the home location before the run fully ends.
+  if (locationFixUsedThisRun && CONFIG.HOME_LOCATION) {
+    console.log('AA_LOC_FIX ' + JSON.stringify({ loc: CONFIG.HOME_LOCATION }));
+    log(`📍 restoring profile location to "${CONFIG.HOME_LOCATION}"`);
+    await sleep(800);
+    location.href = 'https://wellfound.com/profile/edit';
+    return; // resume point restores, returns to /jobs; that scan then finishes for good
   }
 
   // Marks this injection done so the runner's idle re-injection becomes a no-op

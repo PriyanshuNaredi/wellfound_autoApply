@@ -14,7 +14,7 @@
  */
 const path = require('path');
 const fs = require('fs');
-const { CV, geminiKey } = require('./config'); // personal data from .env, injected into the console scripts
+const { CV, geminiKey, homeLocation } = require('./config'); // personal data from .env, injected into the console scripts
 // stealth patches the fingerprint leaks reCAPTCHA uses to flag automation; falls back to plain playwright
 let chromium;
 try {
@@ -202,7 +202,7 @@ function buildInjection() {
     if (window.__aaBusy || window.__aaFinished) return;
     window.__aaBusy = true;
     window.__APPLY_CONFIG = ${JSON.stringify({
-    CV, geminiKey, seenHrefs: seenState.hrefs,
+    CV, geminiKey, homeLocation, seenHrefs: seenState.hrefs,
     locFix: pendingLocFix && Date.now() - pendingLocFix.ts < 600000
       ? { loc: pendingLocFix.loc, jobHref: pendingLocFix.jobHref } : null,
   })};
