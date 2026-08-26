@@ -27,8 +27,8 @@ try {
 
 // Page reloads (naukri clicking "Next") race the stealth plugin's CDP session and throw
 // async rejections outside any await — swallow them so a normal navigation can't kill the run.
-process.on('unhandledRejection', (e) => console.log(`[${new Date().toLocaleString()}] unhandledRejection (ignored): ${String(e && e.message || e).split('\n')[0]}`));
-process.on('uncaughtException', (e) => console.log(`[${new Date().toLocaleString()}] uncaughtException (ignored): ${String(e && e.message || e).split('\n')[0]}`));
+process.on('unhandledRejection', (e) => { recordIssue('crash', 'unhandledRejection: ' + (e && e.message || e)); console.log(`[${new Date().toLocaleString()}] unhandledRejection (ignored): ${String(e && e.message || e).split('\n')[0]}`); });
+process.on('uncaughtException', (e) => { recordIssue('crash', 'uncaughtException: ' + (e && e.message || e)); console.log(`[${new Date().toLocaleString()}] uncaughtException (ignored): ${String(e && e.message || e).split('\n')[0]}`); });
 
 const SITE_ARG = process.argv[2];
 const LOGIN_MODE = process.argv.includes('login');
@@ -133,11 +133,42 @@ const saveSeen = () => {
   clearTimeout(seenSaveTimer);
   seenSaveTimer = setTimeout(() => { try { fs.writeFileSync(SEEN_FILE, JSON.stringify(seenState)); } catch (e) { } }, 2000);
 };
+
+// Pending profile-location change requested by the console script; handed back
+// to the next injection on /profile/edit via __APPLY_CONFIG.locFix. Cleared when
+// the script reports AA_LOC_DONE.
+let pendingLocFix = null;
 const TARGET = DAILY_CAP - dayState.count;
 const MAX_RUNTIME_MS = 100 * 60 * 1000;
 const IDLE_ROTATE_MS = 4 * 60 * 1000;
 
-const log = (msg) => console.log(`[${new Date().toLocaleString()}] [${SITE_ARG}] ${msg}`);
+// ======== Persistent run + issue logs (for diagnosing failures later) ========
+const LOGS_DIR = path.join(__dirname, 'logs');
+try { fs.mkdirSync(LOGS_DIR, { recursive: true }); } catch (e) { }
+const RUN_LOG_FILE = path.join(LOGS_DIR, `run-${SITE_ARG}-${new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)}.log`);
+const ISSUE_FILE = path.join(LOGS_DIR, `issues-${SITE_ARG}.jsonl`);
+// known failure modes worth keeping evidence for; third item = also screenshot
+const ISSUE_PATTERNS = [
+  [/success overlay is still visible|no close button found/i, 'popup-not-closed', true],
+  [/application blocked by location/i, 'location-block', false],
+  [/Could not extract job location|Location fix FAILED|job page fetch failed/i, 'location-fix-failed', true],
+  [/required fields still empty/i, 'missing-required', true],
+  [/submission failed|Send application is still visible/i, 'submit-failed', true],
+  [/stale application popup/i, 'stale-popup', true],
+  [/button not found|panel did not appear/i, 'ui-not-found', true],
+  [/seen persist failed|seen-set restore failed|AA_LOC_DONE failed/i, 'state-error', false],
+];
+function recordIssue(kind, detail) {
+  try {
+    fs.appendFileSync(ISSUE_FILE, JSON.stringify({ ts: new Date().toISOString(), site: SITE_ARG, kind, detail: String(detail).slice(0, 300) }) + '\n');
+  } catch (e) { }
+}
+
+const log = (msg) => {
+  const line = `[${new Date().toLocaleString()}] [${SITE_ARG}] ${msg}`;
+  console.log(line);
+  try { fs.appendFileSync(RUN_LOG_FILE, line + '\n'); } catch (e) { }
+};
 
 // ======== CSV log of every submitted application (created once, appended forever) ========
 const CSV_FILE = path.join(__dirname, 'applications.csv');
@@ -170,7 +201,11 @@ function buildInjection() {
   return `(async () => {
     if (window.__aaBusy || window.__aaFinished) return;
     window.__aaBusy = true;
-    window.__APPLY_CONFIG = ${JSON.stringify({ CV, geminiKey, seenHrefs: seenState.hrefs })};
+    window.__APPLY_CONFIG = ${JSON.stringify({
+    CV, geminiKey, seenHrefs: seenState.hrefs,
+    locFix: pendingLocFix && Date.now() - pendingLocFix.ts < 600000
+      ? { loc: pendingLocFix.loc, jobHref: pendingLocFix.jobHref } : null,
+  })};
     try { await ${raw}
     } finally { window.__aaBusy = false; }
   })()`;
@@ -243,10 +278,31 @@ function buildInjection() {
         saveSeen();
         return;
       }
+      // pending location-fix request from the script
+      const lm = text.trim().match(/^AA_LOC_FIX (\{.+\})$/);
+      if (lm) {
+        lastActivity = Date.now();
+        try { pendingLocFix = JSON.parse(lm[1]); pendingLocFix.ts = Date.now(); } catch (_) { }
+        return;
+      }
+      if (/^AA_LOC_DONE/.test(text.trim())) {
+        lastActivity = Date.now();
+        pendingLocFix = null;
+        return;
+      }
       if (!/auto-apply/.test(text)) return;
       lastActivity = Date.now();
       const clean = text.replace(/%c\[auto-apply\]\s*\S*/, '').trim();
       log('  ' + clean.slice(0, 160));
+
+      // store evidence for known failure modes so they can be fixed later
+      const issue = ISSUE_PATTERNS.find(([re]) => re.test(clean));
+      if (issue) {
+        recordIssue(issue[1], clean);
+        if (issue[2]) {
+          page.screenshot({ path: path.join(LOGS_DIR, `${SITE_ARG}-${issue[1]}-${Date.now()}.png`) }).catch(() => { });
+        }
+      }
 
       // snapshot the wizard whenever it can't proceed, so the blocking field is visible
       if (/no Continue\/Submit button found|no Send button found/.test(clean)) {
@@ -356,4 +412,4 @@ function buildInjection() {
 
   log(`Finished: ${submitted}/${TARGET} applications ${LIVE ? 'submitted' : 'simulated (dry run)'}.`);
   await ctx.close();
-})().catch((e) => { log('FATAL: ' + e.message.split('\n')[0]); process.exit(1); });
+})().catch((e) => { recordIssue('crash', 'FATAL: ' + (e && e.message || e)); log('FATAL: ' + e.message.split('\n')[0]); process.exit(1); });

@@ -4,10 +4,8 @@
 .env
 *.csv
 apply-state-wellfound.json
+.wellfound-seen-*.json
+logs/
+*.jsonl
 *.ps1
-
-
-.env
-node_modules/
 *.log
-.wellfound-chrome-profile/.wellfound-seen-*.json
