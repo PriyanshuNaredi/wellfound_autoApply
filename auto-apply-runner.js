@@ -76,12 +76,25 @@ const SITES = {
   wellfound: {
     script: 'wellfound-auto-apply.js',
     profile: '.wellfound-chrome-profile',
-    searches: ['https://wellfound.com/jobs'],
+    // multiple query views: when one view's feed is exhausted (all seen), the
+    // supervisor rotates to the next; ?q= pages render the same SPA feed ranked
+    // per query, surfacing cards the default view buries
+    searches: [
+      'https://wellfound.com/jobs',
+      'https://wellfound.com/jobs?q=full%20stack',
+      'https://wellfound.com/jobs?q=software%20engineer',
+      'https://wellfound.com/jobs?q=frontend',
+      'https://wellfound.com/jobs?q=backend',
+      'https://wellfound.com/jobs?q=python',
+      'https://wellfound.com/jobs?q=react',
+      'https://wellfound.com/jobs?q=founding%20engineer',
+    ],
     loginUrl: 'https://wellfound.com/login',
     injectOn: (url) => /wellfound\.com/.test(url),
     submittedRe: /APPLICATION CONFIRMED|submission assumed successful|application sent|DRY_RUN — would click/i,
     storeKey: null, // wellfound script keeps no localStorage state
     dailyCap: 50,
+    idleRotateMs: 90 * 1000, // rotate faster than the 4-min default between exhausted views
   },
   naukri: {
     script: 'naukri-auto-apply.js',
@@ -145,6 +158,7 @@ let locDirty = false;
 const TARGET = DAILY_CAP - dayState.count;
 const MAX_RUNTIME_MS = 100 * 60 * 1000;
 const IDLE_ROTATE_MS = 4 * 60 * 1000;
+const SEARCH_COOLDOWN_MS = 10 * 60 * 1000; // pause before restarting the search list
 
 // ======== Persistent run + issue logs (for diagnosing failures later) ========
 const LOGS_DIR = path.join(__dirname, 'logs');
@@ -408,9 +422,16 @@ function buildInjection() {
     }
 
     if (!anyBusy) {
-      if (Date.now() - lastActivity > IDLE_ROTATE_MS) {
+      const idleWait = site.idleRotateMs || IDLE_ROTATE_MS;
+      if (Date.now() - lastActivity > idleWait) {
         searchIdx++;
-        if (searchIdx >= site.searches.length) { log('All searches exhausted for today.'); break; }
+        if (searchIdx >= site.searches.length) {
+          // no hard stop: cool down and restart from the first search — new
+          // postings can land any time and the seen-set guards double-applying
+          log(`All ${site.searches.length} searches scanned. Cooling down ${SEARCH_COOLDOWN_MS / 60000} min, then restarting from the first search.`);
+          await new Promise((r) => setTimeout(r, SEARCH_COOLDOWN_MS));
+          searchIdx = 0;
+        }
         log(`Rotating to next search: ${site.searches[searchIdx]}`);
         await mainPage.goto(site.searches[searchIdx], { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => { });
       } else {
