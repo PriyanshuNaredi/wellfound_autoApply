@@ -1093,11 +1093,11 @@
       // exists on /profile/edit, so store a flag and navigate there; the resume point
       // near the top of this script performs the edit on re-injection, then returns
       // to /jobs where the loop retries this job under the new profile location.
-      let jobLoc = extractJobLocation(cardText || '')
-        || extractJobLocation(panelText)
-        // the SPA overlay behind the apply panel carries the full job details
+      let jobLoc = extractJobLocation((document.body.innerText || '').replace(/\s+/g, ' '))
+        // the SPA overlay behind the apply panel carries the structured job details
         // ("Job Location Seattle Visa Sponsorship …") — richest source, no network
-        || extractJobLocation((document.body.innerText || '').replace(/\s+/g, ' '));
+        || extractJobLocation(cardText || '')
+        || extractJobLocation(panelText);
       if (!jobLoc && jobHref) {
         log('📍 no location in DOM — fetching the job page');
         jobLoc = await fetchJobLocation(jobHref);
@@ -1105,8 +1105,8 @@
       if (jobLoc) {
         const locFixCount = parseInt(localStorage.getItem('__aaLocFixCount') || '0', 10);
         if (locFixCount < 3) { // max 3 location fixes per day — prevents loops
-          localStorage.setItem('__aaLocFixCount', String(locFixCount + 1));
-          localStorage.setItem('__aaLocFix', JSON.stringify({ loc: jobLoc, jobHref: jobHref || location.href }));
+          try { localStorage.setItem('__aaLocFixCount', String(locFixCount + 1)); } catch (_) { }
+          console.log('AA_LOC_FIX ' + JSON.stringify({ loc: jobLoc, jobHref: jobHref || location.href }));
           log(`📍 navigating to /profile/edit to set location "${jobLoc}"`);
           applied = CONFIG.MAX_APPLICATIONS; // end this instance cleanly
           location.href = 'https://wellfound.com/profile/edit';
@@ -2613,36 +2613,22 @@
     return true;
   }
 
-  // Resume point: if we were redirected to /profile/edit to fix the location, do it and go back.
-  try {
-    const locFixRaw = localStorage.getItem('__aaLocFix');
-    if (locFixRaw) {
-      if (/\/profile\/edit/.test(location.pathname)) {
-        const locFix = JSON.parse(locFixRaw);
-        log(`📍 Location fix: updating profile location to "${locFix.loc}"`);
-        await sleep(3000); // let the profile-edit page fully hydrate
-        const ok = await updateProfileLocation(locFix.loc);
-        if (ok && locFix.jobHref) {
-          // unblock the retried job from the persisted seen-set now that the location changed
-          try {
-            const storedSeen = JSON.parse(localStorage.getItem('__aaSeenJobs') || '{}');
-            storedSeen.hrefs = (storedSeen.hrefs || []).filter((h) => h !== locFix.jobHref);
-            localStorage.setItem('__aaSeenJobs', JSON.stringify(storedSeen));
-            console.log('AA_SEEN_REMOVE ' + locFix.jobHref); // unblock on the runner side too
-          } catch (_) { }
-        }
-        localStorage.removeItem('__aaLocFix');
-        log(`📍 Location fix ${ok ? 'succeeded' : 'FAILED'} — returning to /jobs`);
-        await sleep(1500);
-        location.href = 'https://wellfound.com/jobs';
-        return; // this instance stops; the re-injection on /jobs resumes applying
-      } else {
-        localStorage.removeItem('__aaLocFix'); // stale flag (navigation never landed) — clear it
-      }
+  // Resume point: the runner hands us a pending location fix via __APPLY_CONFIG
+  // (this site/profile wipes localStorage on every load, so state must ride
+  // through the Node side).
+  if (((__CFG.locFix) || {}).loc) {
+    if (/\/profile\/edit/.test(location.pathname)) {
+      const locFix = __CFG.locFix;
+      log(`📍 Location fix: updating profile location to "${locFix.loc}"`);
+      await sleep(3000); // let the profile-edit page fully hydrate
+      const ok = await updateProfileLocation(locFix.loc);
+      if (ok && locFix.jobHref) console.log('AA_SEEN_REMOVE ' + locFix.jobHref);
+      console.log('AA_LOC_DONE ' + (ok ? 'ok' : 'failed'));
+      log(`📍 Location fix ${ok ? 'succeeded' : 'FAILED'} — returning to /jobs`);
+      await sleep(1500);
+      location.href = 'https://wellfound.com/jobs';
+      return; // this instance stops; the re-injection on /jobs resumes applying
     }
-  } catch (e) {
-    log('📍 Location fix resume error:', e.message);
-    try { localStorage.removeItem('__aaLocFix'); } catch (_) { }
   }
 
   let applied = 0;
