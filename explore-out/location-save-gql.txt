@@ -1,0 +1,19 @@
+[query] OptInModalAutoLauncher
+VARS: {"operationName":"OptInModalAutoLauncher","variables":{"userId":"21599793"},"extensions":{"operationId":"tfe/836c36bc1f81fc8bbd5c3804a78a3b20e65f9986100885f5aee99bc3e845c6cc"}}
+QUERY: 
+==========
+
+[query] SkillTagAutocompleteField
+VARS: {"operationName":"SkillTagAutocompleteField","variables":{"canonicalSkillsOnly":false,"query":"New York"},"extensions":{"operationId":"tfe/0ca44ecafb1f994f981bac26cce2aba2fcff4ec4757fd5eb2f9cf06fc9bf29bf"}}
+QUERY: 
+==========
+
+[query] ProfileSaveSkills
+VARS: {"operationName":"ProfileSaveSkills","variables":{"input":{"skillTags":["14775","15609","17000","17966","88522","139914","918359","25339"],"userId":"21599793"}},"extensions":{"operationId":"tfe/77e6ef40d61e30d1a307c5ad7a11c2a6504c97a5ff407c84c3b813553a97b96a"}}
+QUERY: 
+==========
+
+[query] ProfileCompletenessWidget
+VARS: {"operationName":"ProfileCompletenessWidget","variables":{"userId":"21599793"},"extensions":{"operationId":"tfe/c325d66855c8d35bb2eaa45ef483aadf97639ce2815e3af12f4e148e49e73a6a"}}
+QUERY: 
+==========
