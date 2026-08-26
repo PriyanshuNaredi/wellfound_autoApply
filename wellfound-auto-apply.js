@@ -2868,8 +2868,10 @@
 
   // End-of-run hygiene: if a job forced the profile location elsewhere today,
   // hand the runner a final fix request so the resume point puts it back to
-  // the home location before the run fully ends.
-  if (locationFixUsedThisRun && CONFIG.HOME_LOCATION) {
+  // the home location before the run fully ends. locRestoreNeeded covers the
+  // case where the fix (and its page navigation) happened in an EARLIER
+  // injection of this same runner process.
+  if ((locationFixUsedThisRun || __CFG.locRestoreNeeded) && CONFIG.HOME_LOCATION) {
     console.log('AA_LOC_FIX ' + JSON.stringify({ loc: CONFIG.HOME_LOCATION }));
     log(`📍 restoring profile location to "${CONFIG.HOME_LOCATION}"`);
     await sleep(800);

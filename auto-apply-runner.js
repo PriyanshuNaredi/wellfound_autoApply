@@ -138,6 +138,10 @@ const saveSeen = () => {
 // to the next injection on /profile/edit via __APPLY_CONFIG.locFix. Cleared when
 // the script reports AA_LOC_DONE.
 let pendingLocFix = null;
+// True once a location fix moved the profile away from HOME_LOCATION; survives
+// the navigations that break the script's in-memory flags. Cleared when a fix
+// targets the home location itself (i.e. the end-of-run restore succeeded).
+let locDirty = false;
 const TARGET = DAILY_CAP - dayState.count;
 const MAX_RUNTIME_MS = 100 * 60 * 1000;
 const IDLE_ROTATE_MS = 4 * 60 * 1000;
@@ -205,6 +209,7 @@ function buildInjection() {
     CV, geminiKey, homeLocation, seenHrefs: seenState.hrefs,
     locFix: pendingLocFix && Date.now() - pendingLocFix.ts < 600000
       ? { loc: pendingLocFix.loc, jobHref: pendingLocFix.jobHref } : null,
+    locRestoreNeeded: locDirty,
   })};
     try { await ${raw}
     } finally { window.__aaBusy = false; }
@@ -287,6 +292,10 @@ function buildInjection() {
       }
       if (/^AA_LOC_DONE/.test(text.trim())) {
         lastActivity = Date.now();
+        if (pendingLocFix) {
+          const home = (homeLocation || '').split(',')[0].trim().toLowerCase();
+          locDirty = !(home && pendingLocFix.loc && pendingLocFix.loc.toLowerCase().startsWith(home));
+        }
         pendingLocFix = null;
         return;
       }
